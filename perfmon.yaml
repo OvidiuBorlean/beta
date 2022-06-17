@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  labels:
+    component: disable-node-exporter-service
+  name: node-logs-exporter
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      component: disable-node-exporter-service
+      tier: node
+  template:
+    metadata:
+      labels:
+        component: disable-node-exporter-service
+        tier: node
+    spec:
+      nodeName: aks-nodepool1-40846148-vmss000000
+      containers:
+        - command:
+            - nsenter
+            - --target
+            - "1"
+            - --mount
+            - --uts
+            - --ipc
+            - --net
+            - --pid
+            - --
+            - sh
+            - -c
+            - |
+              CPU_VAL=4
+              MEM_VAL=2
+              DISK_VAL=4
+              FILE="aksreport"
+              TIME_VAL=5
+
+              printf "Memory|Disk|CPU\n"
+
+              end=$((SECONDS+$TIME_VAL))
+              while [ $SECONDS -lt $end ]; do
+                MEMORY=$(free -m | awk 'NR==2{printf "%.2f", $3*100/$2 }')
+                DISK=$(df -h | awk '$NF=="/"{printf "%f", $5}' | sed 's/.$//' )
+                CPU=$(top -bn1 | grep load | awk '{printf "%.2f%%\n", $(NF-2)}' | sed 's/.$//')
+                echo "$MEMORY|$DISK|$CPU"
+
+                if [[ $DISK > $DISK_VAL ]]
+                then
+                  echo "Disk Alert Pressure"
+                  echo "Disk Alert" > /tmp/aksreport.out
+                  date >> /tmp/aksreport.out
+                  top -n 1 -b >> /tmp/aksreport.out
+                  ps aux >> /tmp/aksreport
+                fi
+
+                if [[ $MEMORY > $MEM_VAL ]]
+                then
+                  echo "MemoryAlert"
+                  echo "MemoryAlert" >> /tmp/aksreport.out
+                  date >> /tmp/aksreport.out
+                  top -n 1 -b >> /tmp/aksreport.out
+                  ps aux >> /tmp/aksreport
+                fi
+
+                if [[ $CPU > $CPU_VAL ]]
+                then
+                  echo "CPU Alert"
+                  echo "CPUAlert" >> /tmp/aksreport.out
+                  date >> /tmp/aksreport.out
+                  top -n 1 -b >> /tmp/aksreport.out
+                  ps aux >> /tmp/aksreport
+                fi
+                sleep 5
+              done
+          image: alpine
+          imagePullPolicy: IfNotPresent
+          name: disable-node-exporter-service
+          resources:
+            requests:
+              cpu: 10m
+          securityContext:
+            privileged: true
+      hostPID: true
+      nodeSelector:
+        kubernetes.io/os: linux
+      tolerations:
+        - effect: NoSchedule
+          operator: Exists
+      restartPolicy: Always
+  updateStrategy:
+    type: OnDelete

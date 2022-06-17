@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    app: kubectl-backup
+  name: kubectl-backup
+spec:
+  nodeName: aks-nodepool1-94103415-vmss000000
+  containers:
+  -  name: kubectl-backup
+     image: alpine
+     imagePullPolicy: IfNotPresent
+     command: 
+      - nsenter
+      - --target
+      - "1"
+      - --mount
+      - --uts
+      - --ipc
+      - --net
+      - --pid
+      - --
+      - sh
+      - -c
+      - |
+        echo "Starting script"
+        #ls 
+        hostname
+        sleep 1000
+        tar -cvzf /tmp/AKS_backup.tgz /var/log/
+        cat <<'EOF' >/tmp/ovidiuborlean
+            
+        EOF
+        echo "Ending"
+     securityContext:
+       runAsUser: 0
+       privileged: true 

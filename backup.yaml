@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: kubectl-backup
+  namespace: default
+  labels:
+    agentpool: nodepool1
+spec:
+  selector:
+    matchLabels: 
+      agentpool: nodepool1
+  template:
+    metadata:
+      labels:
+        agentpool: nodepool1
+    spec:
+      hostPID: true
+      containers:
+      -  name: kubectl-backup
+         image: ubuntu
+         imagePullPolicy: IfNotPresent
+         command: 
+          - nsenter
+          - --target
+          - "1"
+          - --mount
+          - --uts
+          - --ipc
+          - --net
+          - --pid
+          - --
+          - sh
+          - -c
+          - |
+          - ls
+          - hostname
+          #  sleep 1000
+          -  tar -cvzf /tmp/AKS_backup.tgz /var/log/
+          #  EOF
+          - echo "Ending"
+         securityContext:
+           runAsUser: 0
+           privileged: true 
+

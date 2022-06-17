@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+#test
+nodeName=$1
+#Check kubectl client exists
+if ! command -v kubectl &> /dev/null
+then
+    printf "Kubectl client could not be found. Please install Kubectl client before running kubectl-exec.\nRefer to: https://kubernetes.io/docs/tasks/tools/\n\n"
+    exit 1
+fi
+
+#Check client major/minor versions
+kubectl_major_version=$(kubectl version --client -o yaml | grep -i "major" | awk '{ print $2 }' | sed 's/"//g')
+kubectl_minor_version=$(kubectl version --client -o yaml | grep -i "minor" | awk '{ print $2 }' | sed 's/"//g')
+
+if [[ $kubectl_major_version -gt 1 ]] || [[ $kubectl_major_version -eq 1 && $kubectl_minor_version -ge 18 ]]
+then
+        use_generator=false
+        echo "Kuberetes client version is $kubectl_major_version.$kubectl_minor_version. Generator will not be used since it is deprecated."
+elif [[ $kubectl_major_version -eq 1 && $kubectl_minor_version -lt 18 ]]
+then
+        use_generator=true
+        echo "Kuberetes client version is $kubectl_major_version.$kubectl_minor_version. Generator will be used."
+else
+        echo "Invalid kubectl version, exiting."
+        exit 1
+fi
+fqdn=$(kubectl cluster-info | grep -i -o -P '(?<=https://).*(?=:443)' | head -1)
+cat << EOF > ./ds.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  labels:
+    component: disable-node-exporter-service
+  name: node-logs-exporter
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      component: disable-node-exporter-service
+      tier: node
+  template:
+    metadata:
+      labels:
+        component: disable-node-exporter-service
+        tier: node
+    spec:
+      nodeName: aks-nodepool1-40846148-vmss000000
+      containers:
+        - command:
+            - nsenter
+            - --target
+            - "1"
+            - --mount
+            - --uts
+            - --ipc
+            - --net
+            - --pid
+            - --
+            - sh
+            - -c
+            - |
+              fileName=aksreport_$HOSTNAME
+              echo "@Running report on " $HOSTNAME > /tmp/$fileName
+              date >> /tmp/$fileName
+              echo "@IP Address" >> /tmp/$fileName
+              ip addr | grep 'state UP' -A2 | tail -n1 | awk '{print $2}' | cut -f1  -d'/' 2> /dev/null >> /tmp/$fileName
+              echo "@Uptime" >> /tmp/$fileName
+              uptime >> /tmp/$fileName
+              echo "@RPods Scheduled on Node: " >> /tmp/$fileName
+              crictl pods -s Ready -o json | jq -r '(["podID","podNameSpace","podName","podState"] | (., map(length*"-"))), (.items[] | [ .id, .metadata.namespace, .metadata.name, .state ]) | @tsv' | column -t >> /tmp/$fileName
+              echo "@Total Proceses running on the Node: " >> /tmp/$fileName
+              ps aux >> /tmp/$fileName
+              echo "@Total Network ports used" >> /tmp/$fileName
+              ss -tulpn >> /tmp/$fileName
+              echo "@Contrack metrics" >> /tmp/$fileName
+              conntrack -S >> /tmp/$fileName
+              echo "@Checking DNS COnnectivity"
+              LOOKUP=$(dig A microsoft.com +short > /dev/null)
+              if [ -z "$LOOKUP" ];
+              then
+                echo "DNS Lookup Failed" >> /tmp/$fileName;
+              else
+                 echo "Query Suceeded" >> /tmp/$fileName;
+              fi
+              echo "Networking Connectivity Check" >> /tmp/$fileName
+              nc -vz -w 2 $fqdn 443
+              if [ $? -eq 0 ]; then
+                echo "FQDN Connectivity on 443 Succeeded" >> /tmp/$fileName
+              else
+               echo "FQDN Connectivity on 443 Failed" >> /tmp/$fileName
+              fi
+              #Performance Start Running for 15 Sec, pleae change value for a longer test
+              echo "@Performance tests:"
+              printf "Memory\t\tDisk\t\tCPU\n" >> /tmp/$fileName
+              end=$((SECONDS+15))
+              while [ $SECONDS -lt $end ]; do
+              MEMORY=$(free -m | awk 'NR==2{printf "%.2f%%\t\t", $3*100/$2 }')
+              DISK=$(df -h | awk '$NF=="/"{printf "%s\t\t", $5}')
+              CPU=$(top -bn1 | grep load | awk '{printf "%.2f%%\t\t\n", $(NF-2)}')
+              echo "$MEMORY$DISK$CPU" >> /tmp/$fileName
+              sleep 5
+              done
+              #Performance End
+              echo "@Top Applications" >> /tmp/$fileName
+              top -b -n 1 >> /tmp/$fileName
+              echo "@SNAT Port Consumption" >> /tmp/$fileName
+              ip -all netns exec ss -s >> /tmp/$fileName
+              https="https://"
+              curl -k $https$fqdn -k -v 2>&1 | grep expire >> /tmp/$fileName
+              tar -cvzf /tmp/AKS_backup.tgz /var/log/journal /var/log/azure-vnet* /tmp/$fileName
+              sleep 600s
+          image: alpine
+          imagePullPolicy: IfNotPresent
+          name: disable-node-exporter-service
+          resources:
+            requests:
+              cpu: 10m
+          securityContext:
+            privileged: true
+      hostPID: true
+      nodeSelector:
+        kubernetes.io/os: linux
+      tolerations:
+        - effect: NoSchedule
+          operator: Exists
+      restartPolicy: Always
+  updateStrategy:
+    type: OnDelete
+EOF
+kubectl create -f ./ds.yaml
